@@ -1,22 +1,19 @@
 from flask import Flask, request, jsonify, redirect
-from models import db, ShortURL, ClickLog
-from utils import generate_shortcode
 from datetime import datetime, timedelta
-import os
+from utils import generate_shortcode
+from logger import log_request
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///shortener.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db.init_app(app)
+app.after_request(log_request)
 
-with app.app_context():
-    db.create_all()
+# In-memory store
+urls = {}  # shortcode -> {url, expiry, created_at, clicks, click_logs}
 
 @app.route("/shorturls", methods=["POST"])
 def create_short_url():
     data = request.get_json()
     original_url = data.get("url")
-    validity = data.get("validity", 60)  # default to 60 mins
+    validity = data.get("validity", 60)
     custom_shortcode = data.get("shortcode")
 
     if not original_url:
@@ -24,20 +21,17 @@ def create_short_url():
 
     expiry_time = datetime.utcnow() + timedelta(minutes=validity)
 
-    if custom_shortcode:
-        if ShortURL.query.filter_by(shortcode=custom_shortcode).first():
-            return jsonify({"error": "Shortcode already in use"}), 400
-        shortcode = custom_shortcode
-    else:
-        # Generate unique shortcode
-        while True:
-            shortcode = generate_shortcode()
-            if not ShortURL.query.filter_by(shortcode=shortcode).first():
-                break
+    shortcode = custom_shortcode or generate_shortcode()
+    if shortcode in urls:
+        return jsonify({"error": "Shortcode already exists"}), 400
 
-    new_short = ShortURL(url=original_url, shortcode=shortcode, expiry=expiry_time)
-    db.session.add(new_short)
-    db.session.commit()
+    urls[shortcode] = {
+        "url": original_url,
+        "created_at": datetime.utcnow(),
+        "expiry": expiry_time,
+        "clicks": 0,
+        "click_logs": []
+    }
 
     return jsonify({
         "shortLink": f"https://hostname:port/{shortcode}",
@@ -45,41 +39,38 @@ def create_short_url():
     }), 201
 
 @app.route("/shorturls/<shortcode>", methods=["GET"])
-def get_short_url_stats(shortcode):
-    short = ShortURL.query.filter_by(shortcode=shortcode).first()
-    if not short:
+def get_stats(shortcode):
+    if shortcode not in urls:
         return jsonify({"error": "Shortcode not found"}), 404
 
-    clicks = ClickLog.query.filter_by(shorturl_id=short.id).all()
-    click_data = [{
-        "timestamp": click.timestamp.isoformat() + "Z",
-        "referrer": click.referrer,
-        "location": click.location
-    } for click in clicks]
-
+    data = urls[shortcode]
     return jsonify({
-        "originalURL": short.url,
-        "createdAt": short.created_at.isoformat() + "Z",
-        "expiry": short.expiry.isoformat() + "Z",
-        "clickCount": len(clicks),
-        "clickData": click_data
+        "originalURL": data["url"],
+        "createdAt": data["created_at"].isoformat() + "Z",
+        "expiry": data["expiry"].isoformat() + "Z",
+        "clickCount": data["clicks"],
+        "clickData": data["click_logs"]
     })
 
-@app.route("/<shortcode>")
-def redirect_to_url(shortcode):
-    short = ShortURL.query.filter_by(shortcode=shortcode).first()
-    if not short or short.expiry < datetime.utcnow():
-        return jsonify({"error": "Shortlink expired or not found"}), 404
+@app.route("/<shortcode>", methods=["GET"])
+def redirect_short_url(shortcode):
+    if shortcode not in urls:
+        return jsonify({"error": "Shortcode not found"}), 404
 
-    referrer = request.headers.get("Referer", "unknown")
-    # Just simulating location
-    location = request.remote_addr or "unknown"
+    data = urls[shortcode]
+    if data["expiry"] < datetime.utcnow():
+        return jsonify({"error": "Link expired"}), 410
 
-    log = ClickLog(shorturl_id=short.id, referrer=referrer, location=location)
-    db.session.add(log)
-    db.session.commit()
+    # Log click
+    click_info = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "referrer": request.headers.get("Referer", "unknown"),
+        "location": request.remote_addr or "unknown"
+    }
+    data["click_logs"].append(click_info)
+    data["clicks"] += 1
 
-    return redirect(short.url)
+    return redirect(data["url"])
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True)
