@@ -34,7 +34,7 @@ def create_short_url():
     }
 
     return jsonify({
-        "shortLink": f"https://hostname:port/{shortcode}",
+        "shortLink": request.host_url + shortcode,
         "expiry": expiry_time.isoformat() + "Z"
     }), 201
 
@@ -57,6 +57,7 @@ def redirect_short_url(shortcode):
     if shortcode not in urls:
         return jsonify({"error": "Shortcode not found"}), 404
 
+    print(urls)
     data = urls[shortcode]
     if data["expiry"] < datetime.utcnow():
         return jsonify({"error": "Link expired"}), 410
