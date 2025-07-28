@@ -16,7 +16,7 @@ Flask-based URL shortener using in-memory storage (no database).
 - **POST** `/shorturls`
 ```json
 {
-  "url": "https://example.com/very-long-url",
+  "url": "https://google.com",
   "validity": 30,
-  "shortcode": "abcd1"
+  "shortcode": "g123"
 }
